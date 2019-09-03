@@ -28,12 +28,17 @@ import (
 	"k8s.io/klog"
 )
 
+type prometheusDiskMetadata struct {
+	name string
+	zone string
+}
+
 var (
 	shouldSnapshotPrometheusDisk = pflag.Bool("experimental-gcp-snapshot-prometheus-disk", false, "(experimental, provider=gce|gke only) whether to snapshot Prometheus disk before Prometheus stack is torn down")
 	prometheusDiskSnapshotName   = pflag.String("experimental-prometheus-disk-snapshot-name", "", "Name of the prometheus disk snapshot that will be created if snapshots are enabled. If not set, the prometheus disk name will be used.")
 )
 
-func (pc *PrometheusController) snapshotPrometheusDiskIfEnabled() error {
+func (pc *PrometheusController) cachePrometheusDiskMetadataIfEnabled() error {
 	if !*shouldSnapshotPrometheusDisk {
 		return nil
 	}
@@ -44,11 +49,11 @@ func (pc *PrometheusController) snapshotPrometheusDiskIfEnabled() error {
 	return wait.Poll(
 		10*time.Second,
 		2*time.Minute,
-		pc.trySnapshotPrometheusDisk)
+		pc.tryRetrievePrometheusDiskMetadata)
 }
 
-func (pc *PrometheusController) trySnapshotPrometheusDisk() (bool, error) {
-	klog.Info("Trying to snapshot Prometheus' persistent disk...")
+func (pc *PrometheusController) tryRetrievePrometheusDiskMetadata() (bool, error) {
+	klog.Info("Retrieving Prometheus' persistent disk metadata...")
 	k8sClient := pc.framework.GetClientSets().GetClient()
 	list, err := k8sClient.CoreV1().PersistentVolumes().List(metav1.ListOptions{})
 	if err != nil {
@@ -75,6 +80,34 @@ func (pc *PrometheusController) trySnapshotPrometheusDisk() (bool, error) {
 		klog.Info(string(s))
 		return true, nil
 	}
+	pc.diskMetadata.name = pdName
+	pc.diskMetadata.zone = zone
+	return true, nil
+}
+
+func (pc *PrometheusController) snapshotPrometheusDiskIfEnabled() error {
+	if !*shouldSnapshotPrometheusDisk {
+		return nil
+	}
+	if pc.provider != "gce" && pc.provider != "gke" && pc.provider != "kubemark" {
+		return fmt.Errorf(
+			"snapshotting Prometheus' disk only available for GCP providers (gce, gke, kubemark), provider is: %s", pc.provider)
+	}
+	// Update cache of Prometheus disk metadata
+	err := wait.Poll(
+		10*time.Second,
+		2*time.Minute,
+		pc.tryRetrievePrometheusDiskMetadata)
+	if pc.diskMetadata.name == "" || pc.diskMetadata.zone == "" {
+		klog.Warningf("Missing zone or PD name, aborting snapshot")
+		klog.Infof("PD name=%s, zone=%s", pc.diskMetadata.name, pc.diskMetadata.zone)
+		return err
+	}
+	return pc.trySnapshotPrometheusDisk(pc.diskMetadata.name, pc.diskMetadata.zone)
+}
+
+func (pc *PrometheusController) trySnapshotPrometheusDisk(pdName, zone string) error {
+	klog.Info("Trying to snapshot Prometheus' persistent disk...")
 	snapshotName := pdName
 	if *prometheusDiskSnapshotName != "" {
 		if err := VerifySnapshotName(*prometheusDiskSnapshotName); err == nil {
@@ -91,5 +124,5 @@ func (pc *PrometheusController) trySnapshotPrometheusDisk() (bool, error) {
 	} else {
 		klog.Infof("Creating disk snapshot finished with: %q", string(output))
 	}
-	return true, err
+	return err
 }
