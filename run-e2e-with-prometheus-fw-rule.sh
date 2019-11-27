@@ -34,7 +34,10 @@ set +o errexit
   set -o errexit
   SCRIPT_DIR=$(dirname "$0")
   echo COMMAND: $SCRIPT_DIR/run-e2e.sh ${@}
-  $SCRIPT_DIR/run-e2e.sh ${@}
+  #$SCRIPT_DIR/run-e2e.sh ${@}
+  echo COMMAND: $GOPATH/src/k8s.io/perf-tests/run-e2e.sh ${@}
+  $GOPATH/src/k8s.io/perf-tests/run-e2e.sh ${@}
+
 )
 
 # Catch
